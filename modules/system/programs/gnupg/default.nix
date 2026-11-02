@@ -1,0 +1,25 @@
+{
+  lib,
+  config,
+  pkgs,
+  ...
+}: {
+  options = {
+    progs.gnupg.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Enables gnupg agent.";
+    };
+  };
+
+  config = lib.mkIf config.progs.gnupg.enable {
+    programs.gnupg = {
+      package = pkgs.gnupg;
+      agent = {
+        enable = true;
+        pinentryPackage = pkgs.pinentry-curses;
+        settings = {default-cache-ttl = 1550;};
+      };
+    };
+  };
+}

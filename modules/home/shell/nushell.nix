@@ -1,0 +1,230 @@
+{
+  lib,
+  pkgs,
+  ...
+}: {
+  programs.nushell = {
+    enable = true;
+    extraConfig = ''
+      def lla [...args] { ls -la ...(if $args == [] {["."]} else {$args}) | sort-by type name -i }
+      def la  [...args] { ls -a  ...(if $args == [] {["."]} else {$args}) | sort-by type name -i }
+      def ll  [...args] { ls -l  ...(if $args == [] {["."]} else {$args}) | sort-by type name -i }
+      def l   [...args] { ls     ...(if $args == [] {["."]} else {$args}) | sort-by type name -i }
+
+      # WANNA GO TO NIX CONFIG? WELL HERE IT IS BOI
+      def niks [] {
+        cd ~/niks/
+        nvim .
+      }
+
+      # Yazi
+      def --env y [...args] {
+        let tmp = (mktemp -t "yazi-cwd.XXXXXX")
+        yazi ...$args --cwd-file $tmp
+        let cwd = (open $tmp)
+        if $cwd != "" and $cwd != $env.PWD {
+          cd $cwd
+        }
+        rm -fp $tmp
+      }
+
+      # Run nix shell in which the specified packages are available.
+      def fuck [packages: string] {
+        nom shell nixpkgs#($packages)
+      }
+
+      # Search NixOS packages with nh search.
+      def shit [packages: string] {
+        nh search $packages
+      }
+
+      # It is to qlean the machine, optimise, and also do a nix-store checkups, defaults to only cleaning user space.
+      def qlean [
+        --system (-s)
+        --optimize (-o)
+        --repair (-r)
+      ] {
+        "\n" + (date now | into string) + "\n" | save --append ~/niks/qleanlog.txt
+
+        "Qleaning current user profile.\n" | save --append ~/niks/qleanlog.txt
+        nix-collect-garbage -d | grep -E "deleted|saves" | save --append --raw ~/niks/qleanlog.txt
+
+        if $system {
+          "Qleaning system profiles.\n" | save --append ~/niks/qleanlog.txt
+          sudo nix-collect-garbage -d | grep -E "deleted|saves" | save --append --raw ~/niks/qleanlog.txt
+        }
+
+        if $optimize {
+          let tmp = (mktemp)
+          "Optimizing nix store.\n" | save --append ~/niks/qleanlog.txt
+          nix-store --optimise --verbose o+e> $tmp
+          grep "MiB freed by hard-linking" $tmp | save --append --raw ~/niks/qleanlog.txt
+          rm $tmp
+        }
+
+        if $repair {
+          sudo nix-store --verify --check-contents --repair --verbose
+          "Ran nix-store verify, check contents, and repair.\n" | save --append ~/niks/qleanlog.txt
+        }
+      }
+
+      let carapace_completer = {|spans: list<string>|
+        carapace $spans.0 nushell ...$spans
+        | from json
+        | if ($in | default [] | where value == $"($spans | last)ERR" | is-empty) { $in } else { null }
+      }
+
+      $env.CARAPACE_BRIDGES = 'zsh,fish,bash,inshellisense'
+
+      let zoxide_completer = {|spans|
+          $spans | skip 1 | zoxide query -l ...$in | lines | where {|x| $x != $env.PWD}
+      }
+
+      let fish_completer = {|spans|
+        ${lib.getExe pkgs.fish} --command $'complete "--do-complete=($spans | str join " ")"'
+        | $"value(char tab)description(char newline)" + $in
+        | from tsv --flexible --no-infer
+      }
+
+      let multiple_completers = {|spans|
+        ## alias fixer start https://www.nushell.sh/cookbook/external_completers.html#alias-completions
+        let expanded_alias = scope aliases
+        | where name == $spans.0
+        | get -o 0.expansion
+
+        let spans = if $expanded_alias != null {
+          $spans
+          | skip 1
+          | prepend ($expanded_alias | split row ' ' | take 1)
+        } else {
+          $spans
+        }
+        ## alias fixer end
+
+        match $spans.0 {
+          __zoxide_z | __zoxide_zi => $zoxide_completer
+          nu => $fish_completer
+          git => $fish_completer
+          _ => $carapace_completer
+        } | do $in $spans
+      }
+
+      $env.config = {
+        show_banner: false
+        edit_mode: "vi"
+        completions: {
+          case_sensitive: false
+          quick: false
+          partial: false
+          algorithm: "prefix"
+          external: {
+            enable: true
+            max_results: 50
+            completer: $multiple_completers
+          }
+        }
+        keybindings: [
+          {
+            name: left
+            modifier: control
+            keycode: char_h
+            mode: [emacs, vi_normal, vi_insert]
+            event: {
+              until: [
+                { send: MenuLeft }
+                { edit: MoveLeft }
+                { send: Left }
+              ]
+            }
+          }
+
+          {
+            name: right
+            modifier: control
+            keycode: char_l
+            mode: [emacs, vi_normal, vi_insert]
+            event: {
+              until: [
+                { send: HistoryHintWordComplete }
+                { send: MenuRight }
+                { edit: MoveRight }
+                { send: Right }
+              ]
+            }
+          }
+
+          {
+            name: right_full_complete
+            modifier: alt
+            keycode: char_l
+            mode: [emacs, vi_normal, vi_insert]
+            event: {
+              until: [
+                { send: HistoryHintComplete }
+                { send: MenuRight }
+                { edit: MoveRight }
+                { send: Right }
+              ]
+            }
+          }
+
+          {
+            name: up
+            modifier: control
+            keycode: char_k
+            mode: [emacs, vi_normal, vi_insert]
+            event: {
+              until: [
+                { send: MenuUp }
+                { send: Down }
+              ]
+            }
+          }
+
+          {
+            name: down
+            modifier: control
+            keycode: char_j
+            mode: [emacs, vi_normal, vi_insert]
+            event: {
+              until: [
+                { send: MenuDown }
+                { send: Down }
+              ]
+            }
+          }
+        ]
+      }
+
+      $env.PATH = ($env.PATH |
+        split row (char esep) |
+        prepend $"($env.HOME)/.local/bin" |
+        prepend $"($env.HOME)/.cache/.bun/bin" |
+        prepend $"($env.HOME)/.sdkman/candidates/java/current/bin" |
+        prepend $"($env.HOME)/.sdkman/candidates/gradle/current/bin" |
+        prepend $"($env.HOME)/.sdkman/candidates/maven/current/bin" |
+        append $"($env.HOME)/.npm-global/bin" |
+        append $"($env.HOME)/.bun/bin" |
+        append /home/erine/.bun/bin |
+        prepend /home/erine/.apps |
+        append /usr/bin/env
+      )
+
+      $env.SDKMAN_DIR = $"($env.HOME)/.sdkman"
+      $env.JAVA_HOME = $"($env.HOME)/.sdkman/candidates/java/current"
+
+      $env.EDITOR = 'nvim'
+      $env.TERM = 'kitty'
+
+      bunbun
+    '';
+
+    shellAliases = {
+      g = "git";
+      c = "code";
+      ch = "code .";
+      v = "nvim";
+      vh = "nvim .";
+    };
+  };
+}

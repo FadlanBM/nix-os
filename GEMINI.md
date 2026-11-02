@@ -1,0 +1,1 @@
+/home/fadlan/niks/AGENTS.md
